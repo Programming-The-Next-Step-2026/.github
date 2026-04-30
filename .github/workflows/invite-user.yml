@@ -1,0 +1,74 @@
+name: Invite User to Organization
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  invite-user:
+    runs-on: ubuntu-latest
+    # Only run if the comment is from a human and starts with /invite @
+    if: github.event.comment.user.type != 'Bot' && startsWith(github.event.comment.body, '/invite @')
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Extract username
+        id: extract
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          # Use environment variable to prevent script injection from untrusted comment body
+          USERNAME=$(echo "$COMMENT_BODY" | sed -n 's/^.*\/invite @\([a-zA-Z0-9-]*\).*$/\1/p')
+          
+          if [ -z "$USERNAME" ]; then
+            echo "::error::Could not extract a valid GitHub username from the comment."
+            exit 1
+          fi
+          
+          echo "username=$USERNAME" >> "$GITHUB_OUTPUT"
+
+      - name: Invite user to organization
+        id: invite
+        env:
+          GH_TOKEN: ${{ secrets.SECRET_PAT }}
+          USERNAME: ${{ steps.extract.outputs.username }}
+          ORG_NAME: "Programming-The-Next-Step-2026"
+        run: |
+          echo "Resolving User ID for $USERNAME..."
+          USER_ID=$(gh api "users/$USERNAME" --jq '.id')
+          
+          if [ -z "$USER_ID" ] || [ "$USER_ID" == "null" ]; then
+            echo "::error::User '$USERNAME' not found on GitHub."
+            exit 1
+          fi
+          
+          echo "Sending invitation for $USERNAME (ID: $USER_ID) to join $ORG_NAME..."
+          # -F sends values as raw data (numbers), -f sends as strings
+          gh api "orgs/$ORG_NAME/invitations" \
+            -f "role=direct_member" \
+            -F "invitee_id=$USER_ID"
+          
+          echo "Invitation sent successfully."
+
+      - name: Acknowledge invitation
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_URL: ${{ github.event.issue.html_url || github.event.pull_request.html_url }}
+          USERNAME: ${{ steps.extract.outputs.username }}
+        run: |
+          gh issue comment "$ISSUE_URL" --body "✅ Invitation sent to @$USERNAME! Please check your email or GitHub notifications to join the organization."
+
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_URL: ${{ github.event.issue.html_url || github.event.pull_request.html_url }}
+        run: |
+          gh issue comment "$ISSUE_URL" --body "❌ Failed to send invitation. Please check the workflow logs for details."
